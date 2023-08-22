@@ -2,6 +2,7 @@
 #define CONMAN_INC
 
 #include <sys/kmem.h>
+#include "ConManConfig.h"
 
 #define CONMAN_DESCRIPTOR_ADDRESS_TO_DATA_ADDRESS(X) (uint8_t*) ((uint32_t) X + sizeof(ConMan_ParameterDescriptor_t))
 
@@ -15,18 +16,6 @@
 #define CONMAN_VERSION_UNINITIALIZED 0xffffffff
 
 #define CONMAN_SERIALNR_UNINITIALIZED 0xffffffff
-
-
-//Serialnumber address is recommended to be in boot flash. This will also contain the first stage bootloader and should never be re-written.
-//put the serialnumber at the very end of boot flash
-#define __KSEG0_BOOT_MEM_BASE KVA1_TO_KVA0(__KSEG1_BOOT_MEM_BASE)       //why don't the mem-defs contain this??
-#define __KSEG0_BOOT_MEM_LENGTH 0xbf0                                   //kinda hackey, TODO can we make this dynamic? 
-#define CONMAN_SERIALNR_ADDRESS ( ( (uint32_t) ((__KSEG0_BOOT_MEM_BASE + __KSEG0_BOOT_MEM_LENGTH) - sizeof(ConMan_SerialNumber_t)) / 16 ) * 16 ) //byte align to 16 byte-boundaries 
-
-//This address is critical and MUST NOT CHANGE unless the flash is completely re-written. It contains the descriptor of the data array, the location of which is kinda dynamic as it is read from the descriptor at startup
-#define CONMAN_MEMDESCRIPTOR_ADDRESS 0x9d030000
-#define CONMAN_DATA_ADDRESS 0x9d030010
-#define CONMAN_DATA_SIZE 32768
 
 typedef struct{
     void* userData;
