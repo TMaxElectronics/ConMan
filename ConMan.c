@@ -208,7 +208,6 @@ static ConMan_Result_t findParameterInFlash(uint32_t strHash, ConMan_ParameterDe
         bytesScanned += sizeof(ConMan_ParameterDescriptor_t) + currDescriptor.dataSizeBytes;
         lastDescriptor = currDescriptorPtr;
         currDescriptorPtr = (ConMan_ParameterDescriptor_t *) ((uint32_t) ConMan_memoryDescriptor.dataPtr + bytesScanned);
-        if((uint32_t) currDescriptorPtr > 0x9d038010) configASSERT(0);
         NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) currDescriptorPtr, sizeof(ConMan_ParameterDescriptor_t));
     }
     
