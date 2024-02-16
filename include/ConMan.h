@@ -98,6 +98,8 @@ ConMan_Result_t ConMan_eraseParameterData(char* strParameterKey, uint32_t dataOf
 ConMan_Result_t ConMan_updateParameter(char* strParameterKey, uint32_t dataOffset, uint8_t* newDataPtr, uint32_t newDataSize, uint32_t version);
 ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, ConMan_CallbackHandler_t callback, void * callbackData, uint32_t version);
 void ConMan_flushBuffer();
+void ConMan_handleException(uint32_t code, uint32_t arg1, uint32_t arg2, uint32_t arg3);
+uint32_t * ConMan_getExceptionCause();
 void ConMan_init();
 ConMan_SerialNumber_t * ConMan_getSerialisationData();
 void ConMan_allParameterAddedCallback();
@@ -107,5 +109,6 @@ uint32_t ConMan_getDataSize(char* strParameterKey);
 void * ConMan_getDataPtr(ConMan_ParameterDescriptor_t* descriptor);
 uint32_t ConMan_getDataSizeFromDescriptor(ConMan_ParameterDescriptor_t* descriptor);
 ConMan_ParameterDescriptor_t * ConMan_getParameterDescriptor(char* strParameterKey);
+uint32_t ConMan_crc(uint8_t* data, uint32_t size, uint32_t seed);
 
 #endif

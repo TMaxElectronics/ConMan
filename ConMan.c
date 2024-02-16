@@ -17,9 +17,8 @@
 #include "ConMan.h"
 #include "ConManConfig.h"
 #include "stream_buffer.h"
+#include "System.h"
 
-
-static uint32_t crc(uint8_t* data, uint32_t size, uint32_t seed);
 static void createMemoryDecriptor();
 
 #define CONMAN_RENEW_WRITE_TIMEOUT() uint8_t temp = 0; xStreamBufferSend(watchDogBuffer, &temp, 1, 0);
@@ -46,6 +45,8 @@ static void createMemoryDecriptor();
 const volatile uint8_t ConMan_data[CONMAN_DATA_SIZE] __attribute__((address(CONMAN_DATA_ADDRESS), persistent)) = {[0 ... CONMAN_DATA_SIZE-1] = 0xff}; //persistent attribute prevents initialisation data from being stored in flash by the compiler for whatever reason
 const volatile ConMan_MemoryDescriptor_t ConMan_memoryDescriptor __attribute__((address(CONMAN_MEMDESCRIPTOR_ADDRESS), persistent)) = {.dataPtr = ConMan_data, .descriptorVersion = CONMAN_VERSION, .memorySize = CONMAN_DATA_SIZE};
 const volatile ConMan_SerialNumber_t ConMan_serialNumber __attribute__((address(CONMAN_SERIALNR_ADDRESS), persistent)) = {.serialNumber = CONMAN_SERIALNR_UNINITIALIZED};
+const volatile uint32_t ConMan_exceptionRegister[4] __attribute__((address(CONMAN_EXC_ADRESS), persistent)) = {SYS_RESET_FLASHED,0xffffffff,0xffffffff,0xffffffff};
+static uint32_t ConMan_exceptionRegisterTemp[4];
 
 StreamBufferHandle_t watchDogBuffer;
 DLLObject * handlerDescriptorList;
@@ -72,6 +73,20 @@ static void ConMan_task(void*params){
 }
 
 void ConMan_init(){
+    //before any significant code happens we must check if an exception cause was set on last reset
+    if(ConMan_exceptionRegister[0] != 0xffffffff || ConMan_exceptionRegister[1] != 0xffffffff || ConMan_exceptionRegister[2] != 0xffffffff || ConMan_exceptionRegister[3] != 0xffffffff){
+        //at least one of the exception registers is set
+        
+        //copy data into the RAM for future access
+        memcpy(ConMan_exceptionRegisterTemp, ConMan_exceptionRegister, sizeof(uint32_t) * 4);
+        
+        //then create a 0xffffffff-vector to copy into the registers in order to clear them
+        //we write 0xffffffff (all bits = 1) so the exception handler doesn't need to perform an erase operation
+        uint32_t vector[4] = {0xffffffff,0xffffffff,0xffffffff,0xffffffff};
+        NVM_memcpyBuffered(ConMan_exceptionRegister, vector, sizeof(uint32_t) * 4);
+        NVM_flush();
+    }
+    
     //create the list containing value subscribers
     handlerDescriptorList = DLL_create();
     
@@ -94,7 +109,7 @@ void ConMan_init(){
     
     //check crc. No need to read buffered as no data should have been written yet
     //TODO add interlock?
-    if(ConMan_memoryDescriptor.dataCRC != crc(ConMan_memoryDescriptor.dataPtr, ConMan_memoryDescriptor.memorySize, 0)){
+    if(ConMan_memoryDescriptor.dataCRC != ConMan_crc(ConMan_memoryDescriptor.dataPtr, ConMan_memoryDescriptor.memorySize, 0)){
         //data is corrupt, throw an error and {do something?}
         //TODO decide what we need to do... do we erase and start from scratch or do we sit here and do nothing instead?
         //for testing: delete everything
@@ -118,7 +133,7 @@ static void createMemoryDecriptor(){
     descriptor->memorySize = CONMAN_DATA_SIZE;
     descriptor->descriptorVersion = CONMAN_VERSION;
     descriptor->dataPtr = ConMan_data;
-    descriptor->dataCRC = crc(descriptor->dataPtr, descriptor->memorySize, 0);
+    descriptor->dataCRC = ConMan_crc(descriptor->dataPtr, descriptor->memorySize, 0);
 
     //write descriptor to memory
     NVM_memcpyBuffered((uint8_t*) &ConMan_memoryDescriptor, (uint8_t*) descriptor, sizeof(ConMan_MemoryDescriptor_t));
@@ -141,7 +156,7 @@ static void updateCRC(){
         NVM_memcpyBuffered(currChunk, (uint8_t*) ((uint32_t) ConMan_memoryDescriptor.dataPtr + cb), bytesRemainingInChunk);
         
         //step crc
-        currCrc = crc(currChunk, bytesRemainingInChunk, currCrc);
+        currCrc = ConMan_crc(currChunk, bytesRemainingInChunk, currCrc);
     }
 
     vPortFree(currChunk);
@@ -163,7 +178,17 @@ void ConMan_flushBuffer(){
     vTaskExitCritical();
 }
 
-static uint32_t crc(uint8_t* data, uint32_t size, uint32_t seed){
+uint32_t * ConMan_getExceptionCause(){
+    return ConMan_exceptionRegisterTemp;
+}
+
+void ConMan_handleException(uint32_t code, uint32_t arg1, uint32_t arg2, uint32_t arg3){
+    //an exception has occurred and we must remember what exactly happened => write data to flash
+    uint32_t vector[4] = {code,arg1,arg2,arg3};
+    NVM_memcpy4(ConMan_exceptionRegister, vector, sizeof(uint32_t) * 4);
+}
+
+uint32_t ConMan_crc(uint8_t* data, uint32_t size, uint32_t seed){
     if(data == 0) return 0;
          
     uint32_t ret = seed;   
@@ -242,7 +267,7 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
     uint32_t time = _CP0_GET_COUNT();
     uint32_t time2 = _CP0_GET_COUNT();
     //hash the string to find
-    uint32_t hashToFind = crc(strParameterKey, strlen(strParameterKey), 0);
+    uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
     //UART_print("\t\t\t (%09d ticks) hash calc \r\n", _CP0_GET_COUNT() - time);
     time2 = _CP0_GET_COUNT();
@@ -383,7 +408,7 @@ ConMan_Result_t ConMan_eraseData(ConMan_ParameterDescriptor_t * descriptor, uint
 
 ConMan_Result_t ConMan_updateParameter(char* strParameterKey, uint32_t dataOffset, uint8_t* newDataPtr, uint32_t newDataSize, uint32_t version){
     //hash the string to find
-    uint32_t hashToFind = crc(strParameterKey, strlen(strParameterKey), 0);
+    uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
     //try to find the parameter in the list of subscribed values
     ConMan_HandlerDescriptor_t * handlerDescriptor = NULL;
@@ -459,7 +484,7 @@ ConMan_Result_t ConMan_updateParameter(char* strParameterKey, uint32_t dataOffse
 
 ConMan_Result_t ConMan_eraseParameterData(char* strParameterKey, uint32_t dataOffset, uint32_t eraseLength){
     //hash the string to find
-    uint32_t hashToFind = crc(strParameterKey, strlen(strParameterKey), 0);
+    uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
     //try to find the parameter in the list of subscribed values
     ConMan_HandlerDescriptor_t * handlerDescriptor = NULL;
@@ -512,7 +537,7 @@ ConMan_Result_t ConMan_eraseParameterData(char* strParameterKey, uint32_t dataOf
 
 uint32_t ConMan_getDataSize(char* strParameterKey){
     //hash the string to find
-    uint32_t hashToFind = crc(strParameterKey, strlen(strParameterKey), 0);
+    uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
     ConMan_ParameterDescriptor_t * descriptor;
     
@@ -540,7 +565,7 @@ void * ConMan_getDataPtr(ConMan_ParameterDescriptor_t* descriptor){
 
 ConMan_ParameterDescriptor_t * ConMan_getParameterDescriptor(char* strParameterKey){
     //hash the string to find
-    uint32_t hashToFind = crc(strParameterKey, strlen(strParameterKey), 0);
+    uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
     ConMan_ParameterDescriptor_t * descriptor;
     
@@ -567,7 +592,7 @@ ConMan_Result_t ConMan_readData(ConMan_ParameterDescriptor_t * descriptor, uint3
 
 ConMan_Result_t ConMan_getParameterData(char* strParameterKey, uint32_t offset, uint8_t* dataTarget, uint32_t dataTargetSize){
     //hash the string to find
-    uint32_t hashToFind = crc(strParameterKey, strlen(strParameterKey), 0);
+    uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
     ConMan_ParameterDescriptor_t * descriptor;
     
