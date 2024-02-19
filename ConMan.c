@@ -255,7 +255,7 @@ void ConMan_allParameterAddedCallback(){
 #endif
     
     //and finally add the write timeout handler. From now on writes won't happen at predictable times. Needs to be at the highest priority of any tasks accessing the config
-    xTaskCreate(ConMan_task, "ConMan Task", configMINIMAL_STACK_SIZE+128, NULL, tskIDLE_PRIORITY + 6, NULL);
+    xTaskCreate(ConMan_task, "ConMan Task", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY + 6, NULL);
 }
 
 //get a pointer to the struct containing serial numbers. This is a unbuffered read as this value is not written through the buffered NVM operation
