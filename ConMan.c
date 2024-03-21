@@ -13,7 +13,6 @@
 #include "DLL.h"
 #include "FreeRTOS.h"
 #include "NVM.h"
-#include "TTerm_AC.h"
 #include "ConMan.h"
 #include "ConManConfig.h"
 #include "stream_buffer.h"
@@ -365,6 +364,8 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
     ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptor}; //no not the drug...
     DATA_LOADED_HANDLER(desc->callbackHandler, &cbd);
     //UART_print("\t\t\t parameter addition time = %09d ticks \r\n", _CP0_GET_COUNT() - time);
+    
+    return CONFIG_ENTRY_CREATED;
 }
 
 ConMan_Result_t ConMan_writeData(ConMan_ParameterDescriptor_t * descriptor, uint32_t dataOffset, uint8_t* newDataPtr, uint32_t newDataSize){
@@ -384,7 +385,10 @@ ConMan_Result_t ConMan_writeData(ConMan_ParameterDescriptor_t * descriptor, uint
     
     if(dataSizeInDescriptor < dataOffset + newDataSize) return CONFIG_ENTRY_SIZE_MISMATCH;
     
-    NVM_memcpyBuffered((uint8_t *) ((uint32_t) CONMAN_DESCRIPTOR_ADDRESS_TO_DATA_ADDRESS(descriptor) + dataOffset), newDataPtr, newDataSize);
+    if(NVM_memcpyBuffered((uint8_t *) ((uint32_t) CONMAN_DESCRIPTOR_ADDRESS_TO_DATA_ADDRESS(descriptor) + dataOffset), newDataPtr, newDataSize) == NVM_ERROR) return CONFIG_ERROR;
+    
+    //TODO fix this 
+    return CONFIG_OK;
 }
 
 ConMan_Result_t ConMan_eraseData(ConMan_ParameterDescriptor_t * descriptor, uint32_t dataOffset, uint32_t eraseLength){
@@ -404,6 +408,9 @@ ConMan_Result_t ConMan_eraseData(ConMan_ParameterDescriptor_t * descriptor, uint
     if(dataSizeInDescriptor < dataOffset + eraseLength) return CONFIG_ENTRY_SIZE_MISMATCH;
     
     NVM_memsetBuffered((uint8_t *) ((uint32_t) CONMAN_DESCRIPTOR_ADDRESS_TO_DATA_ADDRESS(descriptor) + dataOffset), 0xff, eraseLength);
+    
+    //TODO fix this 
+    return CONFIG_ERROR;
 }
 
 ConMan_Result_t ConMan_updateParameter(char* strParameterKey, uint32_t dataOffset, uint8_t* newDataPtr, uint32_t newDataSize, uint32_t version){

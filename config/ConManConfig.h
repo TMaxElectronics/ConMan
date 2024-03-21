@@ -23,8 +23,8 @@
 #define CONMAN_EXC_ADRESS       ( ( (uint32_t) ((_EBASE_ADDRESS) - sizeof(uint32_t) * 4) / 16 ) * 16 ) //byte align to 16 byte-boundaries 
 
 //This address is critical and MUST NOT CHANGE unless the flash is completely re-written. It contains the descriptor of the data array, the location of which is kinda dynamic as it is read from the descriptor at startup
-#define CONMAN_MEMDESCRIPTOR_ADDRESS 0x9d039500
+#define CONMAN_MEMDESCRIPTOR_ADDRESS 0x9d038e00
 #define CONMAN_DATA_ADDRESS  ( ( (uint32_t) ((CONMAN_SERIALNR_ADDRESS) - CONMAN_DATA_SIZE) / 16 ) * 16 )
-#define CONMAN_DATA_SIZE 4096
+#define CONMAN_DATA_SIZE 8192
 
 #endif
