@@ -268,15 +268,12 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
     //hash the string to find
     uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
-    //UART_print("\t\t\t (%09d ticks) hash calc \r\n", _CP0_GET_COUNT() - time);
-    time2 = _CP0_GET_COUNT();
+    //TODO add a check if the parameter has already been added => if so throw an error
     
     ConMan_ParameterDescriptor_t * descriptor;
     
     //try to locate the config in flash
     ConMan_Result_t res = findParameterInFlash(hashToFind, &descriptor);
-    //UART_print("\t\t\t (%09d ticks) flash search \r\n", _CP0_GET_COUNT() - time);
-    time2 = _CP0_GET_COUNT();
     if(res == CONFIG_LAST_ENTRY_FOUND){
         //not found...
         
@@ -309,8 +306,6 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
         //have the callback handler populate the data with default values. This should call ConMan_writeData() if default data other than 0xff should be populated
         ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptor}; //no not the drug...
         DATA_CREATED_HANDLER(callback, &cbd);
-        //UART_print("\t\t\t\t (%09d ticks) callback handler \r\n", _CP0_GET_COUNT() - time);
-        time2 = _CP0_GET_COUNT();
         
         //update descriptor portion of tempData to resemble a CONMAN_LAST_ENTRY_HASH descriptor
         memset(tempData, 0, sizeof(ConMan_ParameterDescriptor_t));
@@ -319,8 +314,6 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
         //write that descriptor after the current one
         NVM_memcpyBuffered((uint8_t*) ((uint32_t) descriptor + sizeof(ConMan_ParameterDescriptor_t) + dataSize), (uint8_t*) tempData, sizeof(ConMan_ParameterDescriptor_t));
         
-        //UART_print("\t\t\t\t (%09d ticks) 2nd descriptor write \r\n", _CP0_GET_COUNT() - time);
-        time2 = _CP0_GET_COUNT();
 
         //can we avoid this? this way we wast quite some write cycles...
         //updateCRC();
@@ -363,7 +356,6 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
 
     ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptor}; //no not the drug...
     DATA_LOADED_HANDLER(desc->callbackHandler, &cbd);
-    //UART_print("\t\t\t parameter addition time = %09d ticks \r\n", _CP0_GET_COUNT() - time);
     
     return CONFIG_ENTRY_CREATED;
 }
