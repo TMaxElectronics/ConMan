@@ -27,4 +27,6 @@
 #define CONMAN_DATA_ADDRESS  ( ( (uint32_t) ((CONMAN_SERIALNR_ADDRESS) - CONMAN_DATA_SIZE) / 16 ) * 16 )
 #define CONMAN_DATA_SIZE 8192
 
+#define CONMAN_EMPTY_FLASH_VALUE_WORD 0xffffffff
+
 #endif

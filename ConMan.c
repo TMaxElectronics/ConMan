@@ -7,6 +7,7 @@
 
 
 #include <xc.h>
+#include <stdint.h>
 #include <string.h>
 #include <limits.h>
 
@@ -17,6 +18,7 @@
 #include "ConManConfig.h"
 #include "stream_buffer.h"
 #include "System.h"
+#include "TTerm_AC.h"
 
 static void createMemoryDecriptor();
 
@@ -262,100 +264,280 @@ ConMan_SerialNumber_t * ConMan_getSerialisationData(){
     return &ConMan_serialNumber;
 }
 
+static ConMan_Result_t ConMan_findFreeSpace(uint32_t size, ConMan_ParameterDescriptor_t ** targetDescriptor){
+    //start at the beginning of the data field. Load the descriptor via NVM lib, incase we read across a buffered data boundary
+    ConMan_ParameterDescriptor_t currDescriptor;
+    ConMan_ParameterDescriptor_t * currDescriptorPtr = (ConMan_ParameterDescriptor_t *) ConMan_memoryDescriptor.dataPtr;
+    NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) currDescriptorPtr, sizeof(ConMan_ParameterDescriptor_t));
+    
+    
+    //go through all descriptors making sure not to read more data than the list has
+    uint32_t bytesScanned = 0;
+    ConMan_ParameterDescriptor_t * lastDescriptor = 0;
+    while(bytesScanned < ConMan_memoryDescriptor.memorySize){ 
+        //check if the current descriptor is the last one or if its a deleted item
+        
+        if(currDescriptor.keyHash == CONMAN_LAST_ENTRY_HASH){
+            //yes we're at the end of the list. Check if enough space is available here
+            uint32_t spaceRemaining = (uint32_t) ConMan_memoryDescriptor.memorySize - ((uint32_t) currDescriptorPtr - (uint32_t) ConMan_memoryDescriptor.dataPtr) - sizeof(ConMan_ParameterDescriptor_t);
+            
+            //is the space large enough?
+            if(spaceRemaining >= size){
+                //yes! Set the pointer and return
+                *targetDescriptor = currDescriptorPtr;
+                return CONFIG_OK;
+            }
+            
+            //even the space remaining after the last entry is too small, return an error
+            return CONFIG_LAST_ENTRY_FOUND;
+        }
+            
+        //is the item a deleted one? (AKA free space)
+        if(currDescriptor.keyHash == CONMAN_DELETED_ENTRY_HASH){
+            //yes, check if its size would fit the new data and an additional descriptor required to keep the linked list valid
+            if(currDescriptor.dataSizeBytes - sizeof(ConMan_ParameterDescriptor_t) >= size){
+                //yes that would fit => update the pointer and return
+                *targetDescriptor = currDescriptorPtr;
+                return CONFIG_OK;
+                
+            //no, but would the new data fit perfectly by any chance?
+            }else if(currDescriptor.dataSizeBytes == size){
+                //yes! update and return
+                *targetDescriptor = currDescriptorPtr;
+                return CONFIG_OK;
+            }
+        }
+        
+        //normal entry, go on to the next one
+        
+        //update amount of bytes scanned as well as the pointer to the current descriptor
+        bytesScanned += sizeof(ConMan_ParameterDescriptor_t) + currDescriptor.dataSizeBytes;
+        lastDescriptor = currDescriptorPtr;
+        currDescriptorPtr = (ConMan_ParameterDescriptor_t *) ((uint32_t) ConMan_memoryDescriptor.dataPtr + bytesScanned);
+        NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) currDescriptorPtr, sizeof(ConMan_ParameterDescriptor_t));
+    }
+    
+    return CONFIG_ENTRY_NOT_FOUND;
+}
+
+static ConMan_Result_t ConMan_createParameter(ConMan_ParameterDescriptor_t ** newDescriptor, uint32_t strHash, uint32_t dataSize, ConMan_CallbackHandler_t callback, void * callbackData, uint32_t version){
+    //add a new parameter
+    
+    ConMan_ParameterDescriptor_t * target;
+    
+    //try to find some space in the flash
+    ConMan_Result_t res = ConMan_findFreeSpace(dataSize, &target);
+    
+    //did we find some?
+    if(res != CONFIG_OK){
+        //no, return
+        *newDescriptor = NULL;
+        return CONFIG_ERROR;
+    }
+
+    //now we have the place to write the data to, and know there is enough space there.
+    
+    //get the current descriptor
+    ConMan_ParameterDescriptor_t currDescriptor;
+    NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) target, sizeof(ConMan_ParameterDescriptor_t));
+    
+    //check if we are splitting the space of a deleted item or moving the last descriptor of the memory
+    if(currDescriptor.keyHash == CONMAN_DELETED_ENTRY_HASH || (currDescriptor.keyHash == CONMAN_DELETED_ENTRY_HASH && currDescriptor.dataSizeBytes != dataSize)){
+        //yes, we need to add a descriptor after the current one and reduce its size by what we are about to write
+        
+        //update the dataSize
+        currDescriptor.dataSizeBytes = currDescriptor.dataSizeBytes - sizeof(ConMan_ParameterDescriptor_t) - dataSize;
+        
+        //and write the descriptor to the new location
+        NVM_memcpyBuffered((uint8_t*) ((uint32_t) target + sizeof(ConMan_ParameterDescriptor_t) + dataSize), (uint8_t*) &currDescriptor, sizeof(ConMan_ParameterDescriptor_t));
+    }
+
+    //now create the new entry
+    ConMan_ParameterDescriptor_t * tempData = pvPortMalloc(sizeof(ConMan_ParameterDescriptor_t));
+    memset(tempData, 0, sizeof(ConMan_ParameterDescriptor_t));
+    tempData->dataSizeBytes = dataSize;
+    tempData->keyHash = strHash;
+    tempData->dataVersion = version;
+
+    //write descriptor to memory
+    NVM_memcpyBuffered((uint8_t*) target, (uint8_t*) tempData, sizeof(ConMan_ParameterDescriptor_t));
+
+    //is there a callback? If not make sure the data is erased
+    if(callback != NULL){    
+        //have the callback handler populate the data with default values. This should call ConMan_writeData() if default data other than 0xff should be populated
+        ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = target}; //no not the drug...
+        DATA_CREATED_HANDLER(callback, &cbd);
+    }else{
+        ConMan_eraseData(target, 0, dataSize);
+    }
+
+    *newDescriptor = target;
+    
+    //free the temporary data
+    vPortFree(tempData);
+}
+
+static ConMan_Result_t ConMan_deleteParameter(ConMan_ParameterDescriptor_t * itemToDelete){
+    //we're going to delete an item. This is done by setting the hash to the magic number that indicates a deleted item
+    
+    //first load the current entry
+    ConMan_ParameterDescriptor_t currDescriptor;
+    NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) itemToDelete, sizeof(ConMan_ParameterDescriptor_t));
+    
+    //make sure we aren't accidentally deleting the last entry 
+    if(currDescriptor.keyHash == CONMAN_LAST_ENTRY_HASH) return CONFIG_ERROR;
+        
+    //update the hash
+    currDescriptor.keyHash = CONMAN_DELETED_ENTRY_HASH;
+    
+    //and write the data
+    //write descriptor to memory
+    NVM_memcpyBuffered((uint8_t*) itemToDelete, (uint8_t*) &currDescriptor, sizeof(ConMan_ParameterDescriptor_t));
+    
+    return CONFIG_OK;
+}
+
+ConMan_Result_t ConMan_updateDescriptor(ConMan_ParameterDescriptor_t ** descriptor, uint32_t newDataSize, uint32_t newVersion){
+    //user just got the request to update a parameter and wants to update the descriptor to reflect that change
+    
+    //load the old descriptor
+    ConMan_ParameterDescriptor_t currDescriptor;
+    NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) (*descriptor), sizeof(ConMan_ParameterDescriptor_t));
+    
+    //will the stuff stay in the same place?
+    if(newDataSize != currDescriptor.dataSizeBytes){
+        //no, descriptor will move. Delete the current one and create it again in the new place
+        ConMan_Result_t res = ConMan_deleteParameter(*descriptor);
+        
+        //did that work?
+        if(res == CONFIG_ERROR){
+            //no :( best we can do is return
+            return CONFIG_ERROR;
+        }
+        
+        //create the new descriptor, but without calling any callbacks
+        res = ConMan_createParameter(descriptor, currDescriptor.keyHash, newDataSize, NULL, NULL, newVersion);
+        
+        //did that work?
+        if(res == CONFIG_ERROR){
+            //no :( This likely means that the new descriptor would be too big for the memory. 
+            //Return an error and invalidate the descriptor pointer as the old one has been deleted now
+            return CONFIG_ERROR;
+        }
+        
+        //yep all good, descriptor has also been updated by the createParameter function, but let the user know the data was resized
+        return CONFIG_ENTRY_SIZE_MISMATCH;
+    }
+    
+    //yes location won't change, just update the version and update pending flag in the descriptor and write that to flash
+    currDescriptor.dataVersion = newVersion;
+    currDescriptor.flags &= ~CONMAN_FLAG_UPDATE_PENDING;
+    NVM_memcpyBuffered((uint8_t*) (*descriptor), (uint8_t*) &currDescriptor, sizeof(ConMan_ParameterDescriptor_t));
+    
+    return CONFIG_OK;
+}
+
 ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, ConMan_CallbackHandler_t callback, void * callbackData, uint32_t version){
-    uint32_t time = _CP0_GET_COUNT();
-    uint32_t time2 = _CP0_GET_COUNT();
     //hash the string to find
     uint32_t hashToFind = ConMan_crc(strParameterKey, strlen(strParameterKey), 0);
     
     //TODO add a check if the parameter has already been added => if so throw an error
     
-    ConMan_ParameterDescriptor_t * descriptor;
+    ConMan_ParameterDescriptor_t * descriptorPointer;
+    ConMan_ParameterDescriptor_t descriptor;
+    NVM_memcpyBuffered((uint8_t*) &descriptor, (uint8_t*) (descriptorPointer), sizeof(ConMan_ParameterDescriptor_t));
+    
     
     //try to locate the config in flash
-    ConMan_Result_t res = findParameterInFlash(hashToFind, &descriptor);
+    ConMan_Result_t res = findParameterInFlash(hashToFind, &descriptorPointer);
     if(res == CONFIG_LAST_ENTRY_FOUND){
-        //not found...
-        
-        //the pointer to the CONMAN_LAST_ENTRY_HASH descriptor is stored in the descriptor variable by findParameterInFlash()
-        
-        //calculate space remaining
-        uint32_t spaceRemaining = (uint32_t) ConMan_memoryDescriptor.memorySize - ((uint32_t) descriptor - (uint32_t) ConMan_memoryDescriptor.dataPtr);
-
-        if(spaceRemaining - sizeof(ConMan_ParameterDescriptor_t) < dataSize){
-            //not enough space available for the data... do something
-            //TODO handle this error
-            configASSERT(0);
+        //not found... create a new entry. The ConMan_createParameter fucntion also calls the entry created callback
+        if(ConMan_createParameter(&descriptorPointer, hashToFind, dataSize, callback, callbackData, version) != CONFIG_OK){
+            //something went wrong, return
+            return CONFIG_ERROR;
         }
-
-        //now we have the place to write the data to, and know there is enough space there.
         
-        //create the new entry
-        ConMan_ParameterDescriptor_t * tempData = pvPortMalloc(sizeof(ConMan_ParameterDescriptor_t));
-        memset(tempData, 0, sizeof(ConMan_ParameterDescriptor_t));
-        tempData->dataSizeBytes = dataSize;
-        tempData->keyHash = hashToFind;
-        tempData->dataVersion = version;
-
-        //write descriptor to memory
-        NVM_memcpyBuffered((uint8_t*) descriptor, (uint8_t*) tempData, sizeof(ConMan_ParameterDescriptor_t));
-        
-        //UART_print("\t\t\t\t (%09d ticks) descriptor write \r\n", _CP0_GET_COUNT() - time);
-        time2 = _CP0_GET_COUNT();
-        
-        //have the callback handler populate the data with default values. This should call ConMan_writeData() if default data other than 0xff should be populated
-        ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptor}; //no not the drug...
-        DATA_CREATED_HANDLER(callback, &cbd);
-        
-        //update descriptor portion of tempData to resemble a CONMAN_LAST_ENTRY_HASH descriptor
-        memset(tempData, 0, sizeof(ConMan_ParameterDescriptor_t));
-        tempData->keyHash = CONMAN_LAST_ENTRY_HASH;
-        
-        //write that descriptor after the current one
-        NVM_memcpyBuffered((uint8_t*) ((uint32_t) descriptor + sizeof(ConMan_ParameterDescriptor_t) + dataSize), (uint8_t*) tempData, sizeof(ConMan_ParameterDescriptor_t));
-        
-
-        //can we avoid this? this way we wast quite some write cycles...
-        //updateCRC();
-        //UART_print("\t\t\t\t (%09d ticks) crc update\r\n", _CP0_GET_COUNT() - time);
-        //time2 = _CP0_GET_COUNT();
-        //NVM_flush();
-        
-        //free the temporary data
-        vPortFree(tempData);
     }else if(res == CONFIG_ENTRY_NOT_FOUND){
         //no last entry was found... there is some problem with the storage
         configASSERT(0);
         //TODO handle this...
     }
     
+    //entry with matching key was found. Now see if the other data matches
     
-    
-    //check if the existing data entry is the same size as the one we are looking for
-    if(descriptor->dataSizeBytes != dataSize){
-        //no! we need to re-size the existing data
-        //TODO
-        //is the old data small enough to move?
-    }
 
     //does the data version in flash match the one we are trying to read?
-    if(descriptor->dataVersion != version){
-        //no! call the event handler and let it handle this
-        //TODO call handler
+    if(descriptor.dataSizeBytes != version){
+        //no! first make sure that the current descriptor is marked as pending an update
+        descriptor.flags |= CONMAN_FLAG_UPDATE_PENDING;
+        NVM_memcpyBuffered((uint8_t*) descriptorPointer, (uint8_t*) &descriptor, sizeof(ConMan_ParameterDescriptor_t));
+
+        //then call the event handler and let it handle this
+        ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptorPointer}; //no not the drug...
+        ConMan_Result_t updateRes = DATA_UPDATED_HANDLER(callback, &cbd);
+        
+        //make sure that our descriptor is updated if the DATA_UPDATED_HANDLER ended up moving it
+        if(descriptorPointer != cbd.callbackData){
+            //yep it moved, update the descriptor pointer and reload it
+            descriptorPointer = cbd.callbackData;
+        }
+        
+        //reload the new descriptor
+        NVM_memcpyBuffered((uint8_t*) &descriptor, (uint8_t*) (descriptorPointer), sizeof(ConMan_ParameterDescriptor_t));
+        
+        //did the user actually perform an update?
+        if(descriptor.flags & CONMAN_FLAG_UPDATE_PENDING){
+            //lol no? Seems he didn't implement this function. Pretend like we just created the parameter
+            
+            //try to delete the old parameter
+            if(ConMan_deleteParameter(descriptorPointer) == CONFIG_ERROR){
+                //failed :( best we can do is return
+                return CONFIG_ERROR;
+            }
+        
+            //create the new descriptor and have the user populate it as if it was just created like normal
+            if(ConMan_createParameter(&descriptorPointer, hashToFind, dataSize, callback, callbackData, version) != CONFIG_OK){
+                //something went wrong, return
+                return CONFIG_ERROR;
+            }
+            
+            //reload descriptor again
+            NVM_memcpyBuffered((uint8_t*) &descriptor, (uint8_t*) (descriptorPointer), sizeof(ConMan_ParameterDescriptor_t));
+        }
+    }
+    
+    //check if the existing data entry is the same size as the one we are looking for
+    //WARNING:  this really should only be the case if the data version changed (which is handled in the state above).
+    //          This will also result in calling updateDescriptor which updates the data size.
+    if(descriptor.dataSizeBytes != dataSize){
+        //no! we need to re-size the existing data. Since the user didn't bother to update it best we can do is erase everything and pretend we're starting over
+        //try to delete the old parameter
+        if(ConMan_deleteParameter(descriptorPointer) == CONFIG_ERROR){
+            //failed :( best we can do is return
+            return CONFIG_ERROR;
+        }
+
+        //create the new descriptor and have the user populate it as if it was just created like normal
+        if(ConMan_createParameter(&descriptorPointer, hashToFind, dataSize, callback, callbackData, version) != CONFIG_OK){
+            //something went wrong, return
+            return CONFIG_ERROR;
+        }
+        
+        //TODO if any access to descriptor is added after this we need to reload it!
     }
     
     //add the pointer containing dynamic data such as the callback handler pointer to the handler list
     ConMan_HandlerDescriptor_t * desc = pvPortMalloc(sizeof(ConMan_HandlerDescriptor_t));
 
-    desc->targetConfig = descriptor;
+    desc->targetConfig = descriptorPointer;
     desc->callbackData = callbackData;
     desc->callbackHandler = callback;
     desc->keyHash = hashToFind;
 
     DLL_add(desc, handlerDescriptorList);
 
-    ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptor}; //no not the drug...
-    DATA_LOADED_HANDLER(desc->callbackHandler, &cbd);
+    ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptorPointer}; //no not the drug...
+    DATA_LOADED_HANDLER(callback, &cbd);
     
     return CONFIG_ENTRY_CREATED;
 }
@@ -384,13 +566,6 @@ ConMan_Result_t ConMan_writeData(ConMan_ParameterDescriptor_t * descriptor, uint
 }
 
 ConMan_Result_t ConMan_eraseData(ConMan_ParameterDescriptor_t * descriptor, uint32_t dataOffset, uint32_t eraseLength){
-    //write that descriptor after the current one
-    /*if(descriptor->dataSizeBytes != newDataSize){
-        //user messed up... data size being written is not wat was set when adding the parameter
-        configASSERT(0);
-        //TODO handle this properly
-    }*/
-    
     //renew the write timeout
     CONMAN_RENEW_WRITE_TIMEOUT();
     
@@ -399,7 +574,7 @@ ConMan_Result_t ConMan_eraseData(ConMan_ParameterDescriptor_t * descriptor, uint
     
     if(dataSizeInDescriptor < dataOffset + eraseLength) return CONFIG_ENTRY_SIZE_MISMATCH;
     
-    NVM_memsetBuffered((uint8_t *) ((uint32_t) CONMAN_DESCRIPTOR_ADDRESS_TO_DATA_ADDRESS(descriptor) + dataOffset), 0xff, eraseLength);
+    NVM_memsetBuffered((uint8_t *) ((uint32_t) CONMAN_DESCRIPTOR_ADDRESS_TO_DATA_ADDRESS(descriptor) + dataOffset), CONMAN_EMPTY_FLASH_VALUE_WORD, eraseLength);
     
     //TODO fix this 
     return CONFIG_ERROR;
@@ -412,8 +587,8 @@ ConMan_Result_t ConMan_updateParameter(char* strParameterKey, uint32_t dataOffse
     //try to find the parameter in the list of subscribed values
     ConMan_HandlerDescriptor_t * handlerDescriptor = NULL;
     uint32_t found = 0;
-    DLL_FOREACH(currDescriptor, handlerDescriptorList){
-        handlerDescriptor = currDescriptor->data;
+    DLL_FOREACH(currDLLDescriptor, handlerDescriptorList){
+        handlerDescriptor = currDLLDescriptor->data;
         if(handlerDescriptor->keyHash == hashToFind){ 
             found = 1;
             break;
@@ -449,22 +624,13 @@ ConMan_Result_t ConMan_updateParameter(char* strParameterKey, uint32_t dataOffse
     }
     
     //now we have the pointer to the data and can update it in flash
+    ConMan_ParameterDescriptor_t currDescriptor;
+    NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) descriptor, sizeof(ConMan_ParameterDescriptor_t));
     
-    //check if the descriptor needs to be updated (at the moment the only thing that could change here is the version. The sizechange is handled in changeParameterSize())
-    if(descriptor->dataVersion != version){
-        // jep something in there has changed, go ahead and update this. If in the future flags are introduced that could change this needs to be added here too
-        
-        //load current descriptor
-        ConMan_ParameterDescriptor_t * tempDesc = pvPortMalloc(sizeof(ConMan_ParameterDescriptor_t));
-        memcpy(tempDesc, descriptor, sizeof(ConMan_ParameterDescriptor_t));
-        
-        //modify values
-        tempDesc->dataVersion = version;
-        
-        //and write to flash (or at least the buffer)
-        NVM_memcpyBuffered((uint8_t*) descriptor, (uint8_t*) tempDesc, sizeof(ConMan_ParameterDescriptor_t));
-        
-        vPortFree(tempDesc);
+    //is the version outdated?
+    if(currDescriptor.dataVersion != version){
+        //yes version changed! This is no longer allowed in a normal write. User should call updateDescriptor first if the version upgrade is intentional
+        return CONFIG_ENTRY_VERSION_MISMATCH;
     }
     
     ConMan_writeData(descriptor, dataOffset, newDataPtr, newDataSize);

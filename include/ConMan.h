@@ -8,23 +8,23 @@
 
 #define DATA_LOADED_HANDLER(CBH, DATAPTR) (*(CBH))(CONFIG_ENTRY_LOADED, DATAPTR)
 #define DATA_CREATED_HANDLER(CBH, DATAPTR) (*(CBH))(CONFIG_ENTRY_CREATED, DATAPTR)
-#define DATA_UPDATED_HANDLER(CBH, DATAPTR) (*(CBH))(CONFIG_ENTRY_UPDATED, DATAPTR)
+#define DATA_UPDATED_HANDLER(CBH, DATAPTR) (*(CBH))(CONFIG_ENTRY_VERSION_MISMATCH, DATAPTR)
 //hash of the last (invalid) entry in the list. Used to find the definite end of the data
 #define CONMAN_LAST_ENTRY_HASH 0xffffffff
+#define CONMAN_DELETED_ENTRY_HASH 0xfffffffe
 
 #define CONMAN_VERSION 1
 #define CONMAN_VERSION_UNINITIALIZED 0xffffffff
 
 #define CONMAN_SERIALNR_UNINITIALIZED 0xffffffff
 
-typedef struct{
-    void* userData;
-    void* callbackData;
-} ConMan_CallbackData_t;
+#define CONMAN_FLAG_WRITE_PROTECTED 0x00000001
+#define CONMAN_FLAG_UPDATE_PENDING 0x00000002
 
-typedef enum{CONFIG_OK, CONFIG_ERROR, CONFIG_LAST_ENTRY_FOUND, CONFIG_ENTRY_NOT_FOUND, CONFIG_ENTRY_CREATED, CONFIG_ENTRY_UPDATED, CONFIG_ENTRY_SIZE_MISMATCH, CONFIG_ENTRY_LOADED, CONFIG_VERIFY_VALUE} ConMan_Result_t;
+typedef enum{CONFIG_OK, CONFIG_ERROR, CONFIG_LAST_ENTRY_FOUND, CONFIG_ENTRY_NOT_FOUND, CONFIG_ENTRY_CREATED, CONFIG_ENTRY_UPDATED, CONFIG_ENTRY_SIZE_MISMATCH, CONFIG_ENTRY_VERSION_MISMATCH, CONFIG_ENTRY_LOADED, CONFIG_VERIFY_VALUE} ConMan_Result_t;
 
-typedef void (* ConMan_CallbackHandler_t)(ConMan_Result_t evt, ConMan_CallbackData_t * data);
+typedef struct __CallbackData__ ConMan_CallbackData_t;
+typedef ConMan_Result_t (* ConMan_CallbackHandler_t)(ConMan_Result_t evt, ConMan_CallbackData_t * data);
 
 //struct that lies in front of every piece of data in the configuration memory
 typedef struct{
@@ -86,6 +86,12 @@ typedef struct{
     //this should be set by the bootloader
     uint32_t bootLoaderVersion;
 } __attribute__((packed)) ConMan_SerialNumber_t;
+
+struct __CallbackData__{
+    void * userData;
+    ConMan_ParameterDescriptor_t * callbackData;
+};
+
 
 //time in ms after which written data is automatically flushed to NVM even if ConMan_writeFinishedHandler() is not called
 #define CONMAN_WRITETIMEOUT 25
