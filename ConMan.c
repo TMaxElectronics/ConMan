@@ -251,7 +251,7 @@ void ConMan_allParameterAddedCallback(){
     ConMan_Result_t res = findParameterInFlash(CONMAN_LAST_ENTRY_HASH, &descriptor);
     if(res == CONFIG_LAST_ENTRY_FOUND){
         volatile uint32_t spaceRemaining = (uint32_t) ConMan_memoryDescriptor.memorySize - ((uint32_t) descriptor - (uint32_t) ConMan_memoryDescriptor.dataPtr);
-        //configASSERT(0);
+        configASSERT(0);
     }
 #endif
     
@@ -445,8 +445,6 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
     
     ConMan_ParameterDescriptor_t * descriptorPointer;
     ConMan_ParameterDescriptor_t descriptor;
-    NVM_memcpyBuffered((uint8_t*) &descriptor, (uint8_t*) (descriptorPointer), sizeof(ConMan_ParameterDescriptor_t));
-    
     
     //try to locate the config in flash
     ConMan_Result_t res = findParameterInFlash(hashToFind, &descriptorPointer);
@@ -465,9 +463,10 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
     
     //entry with matching key was found. Now see if the other data matches
     
+    NVM_memcpyBuffered((uint8_t*) &descriptor, (uint8_t*) (descriptorPointer), sizeof(ConMan_ParameterDescriptor_t));
 
     //does the data version in flash match the one we are trying to read?
-    if(descriptor.dataSizeBytes != version){
+    if(descriptor.dataVersion != version){
         //no! first make sure that the current descriptor is marked as pending an update
         descriptor.flags |= CONMAN_FLAG_UPDATE_PENDING;
         NVM_memcpyBuffered((uint8_t*) descriptorPointer, (uint8_t*) &descriptor, sizeof(ConMan_ParameterDescriptor_t));
