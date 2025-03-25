@@ -251,7 +251,7 @@ void ConMan_allParameterAddedCallback(){
     ConMan_Result_t res = findParameterInFlash(CONMAN_LAST_ENTRY_HASH, &descriptor);
     if(res == CONFIG_LAST_ENTRY_FOUND){
         volatile uint32_t spaceRemaining = (uint32_t) ConMan_memoryDescriptor.memorySize - ((uint32_t) descriptor - (uint32_t) ConMan_memoryDescriptor.dataPtr);
-        configASSERT(0);
+        //configASSERT(0);
     }
 #endif
     
@@ -279,10 +279,10 @@ static ConMan_Result_t ConMan_findFreeSpace(uint32_t size, ConMan_ParameterDescr
         
         if(currDescriptor.keyHash == CONMAN_LAST_ENTRY_HASH){
             //yes we're at the end of the list. Check if enough space is available here
-            uint32_t spaceRemaining = (uint32_t) ConMan_memoryDescriptor.memorySize - ((uint32_t) currDescriptorPtr - (uint32_t) ConMan_memoryDescriptor.dataPtr) - sizeof(ConMan_ParameterDescriptor_t);
+            int32_t spaceRemaining = (int32_t) ConMan_memoryDescriptor.memorySize - ((int32_t) currDescriptorPtr - (int32_t) ConMan_memoryDescriptor.dataPtr);
             
             //is the space large enough?
-            if(spaceRemaining >= size){
+            if(spaceRemaining >= (int32_t) (size + sizeof(ConMan_ParameterDescriptor_t))){
                 //yes! Set the pointer and return
                 *targetDescriptor = currDescriptorPtr;
                 return CONFIG_OK;
@@ -295,10 +295,10 @@ static ConMan_Result_t ConMan_findFreeSpace(uint32_t size, ConMan_ParameterDescr
         //is the item a deleted one? (AKA free space)
         if(currDescriptor.keyHash == CONMAN_DELETED_ENTRY_HASH){
             //yes, check if its size would fit the new data and an additional descriptor required to keep the linked list valid
-            if(currDescriptor.dataSizeBytes - sizeof(ConMan_ParameterDescriptor_t) >= size){
+            if(currDescriptor.dataSizeBytes >= size + sizeof(ConMan_ParameterDescriptor_t)){
                 //yes that would fit => update the pointer and return
                 *targetDescriptor = currDescriptorPtr;
-                return CONFIG_OK;
+                return CONFIG_ENTRY_SIZE_MISMATCH;
                 
             //no, but would the new data fit perfectly by any chance?
             }else if(currDescriptor.dataSizeBytes == size){
@@ -329,7 +329,7 @@ static ConMan_Result_t ConMan_createParameter(ConMan_ParameterDescriptor_t ** ne
     ConMan_Result_t res = ConMan_findFreeSpace(dataSize, &target);
     
     //did we find some?
-    if(res != CONFIG_OK){
+    if(res != CONFIG_OK && res != CONFIG_ENTRY_SIZE_MISMATCH){
         //no, return
         *newDescriptor = NULL;
         return CONFIG_ERROR;
@@ -342,7 +342,7 @@ static ConMan_Result_t ConMan_createParameter(ConMan_ParameterDescriptor_t ** ne
     NVM_memcpyBuffered((uint8_t*) &currDescriptor, (uint8_t*) target, sizeof(ConMan_ParameterDescriptor_t));
     
     //check if we are splitting the space of a deleted item or moving the last descriptor of the memory
-    if(currDescriptor.keyHash == CONMAN_DELETED_ENTRY_HASH || (currDescriptor.keyHash == CONMAN_DELETED_ENTRY_HASH && currDescriptor.dataSizeBytes != dataSize)){
+    if(currDescriptor.keyHash == CONMAN_LAST_ENTRY_HASH || (currDescriptor.keyHash == CONMAN_DELETED_ENTRY_HASH && currDescriptor.dataSizeBytes != dataSize)){
         //yes, we need to add a descriptor after the current one and reduce its size by what we are about to write
         
         //update the dataSize
