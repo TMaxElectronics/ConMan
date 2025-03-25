@@ -397,7 +397,7 @@ static ConMan_Result_t ConMan_deleteParameter(ConMan_ParameterDescriptor_t * ite
     return CONFIG_OK;
 }
 
-ConMan_Result_t ConMan_updateDescriptor(ConMan_ParameterDescriptor_t ** descriptor, uint32_t newDataSize, uint32_t newVersion){
+ConMan_Result_t ConMan_upgradeParameter(ConMan_ParameterDescriptor_t ** descriptor, uint32_t newDataSize, uint32_t newVersion){
     //user just got the request to update a parameter and wants to update the descriptor to reflect that change
     
     //load the old descriptor
@@ -473,7 +473,7 @@ ConMan_Result_t ConMan_addParameter(char* strParameterKey, uint32_t dataSize, Co
 
         //then call the event handler and let it handle this
         ConMan_CallbackData_t cbd = {.userData = callbackData, .callbackData = descriptorPointer}; //no not the drug...
-        ConMan_Result_t updateRes = DATA_UPDATED_HANDLER(callback, &cbd);
+        ConMan_Result_t updateRes = DATA_UPGRADED_HANDLER(callback, &cbd);
         
         //make sure that our descriptor is updated if the DATA_UPDATED_HANDLER ended up moving it
         if(descriptorPointer != cbd.callbackData){
@@ -695,8 +695,6 @@ ConMan_Result_t ConMan_eraseParameterData(char* strParameterKey, uint32_t dataOf
         ConMan_CallbackData_t cbd = {.userData = handlerDescriptor->callbackData, .callbackData = &d}; //no not the drug...
         DATA_UPDATED_HANDLER(handlerDescriptor->callbackHandler, &cbd);
     }
-    //TODO we still need to decide when to flush the data so it's not lost in case of a sudden power loss (e.g. unplugging the device)
-    //NVM_flush();
 }
 
 uint32_t ConMan_getDataSize(char* strParameterKey){
